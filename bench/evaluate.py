@@ -37,10 +37,11 @@ def main():
     ap.add_argument("config")
     ap.add_argument("--out")
     ap.add_argument("--runs", help="runs.csv path (default <work_dir>/runs.csv)")
+    ap.add_argument("--work-dir", help="override work_dir")
     a = ap.parse_args()
     with open(a.config) as f:
         cfg = yaml.safe_load(f)
-    work_dir = os.path.abspath(cfg["work_dir"])
+    work_dir = os.path.abspath(a.work_dir or cfg["work_dir"])
     out = a.out or os.path.join(work_dir, "evaluation")
     os.makedirs(os.path.join(out, "pairs"), exist_ok=True)
     dims = tuple(cfg["dims"])
@@ -150,7 +151,14 @@ def _fig_accuracy(ok, order, out):
     for p in order:
         f = os.path.join(out, "pairs", "%s_rep1.csv" % p)
         data.append(pd.read_csv(f)["trace_r"].dropna().values if os.path.exists(f) else np.array([]))
-    ax.violinplot([d if len(d) else [np.nan] for d in data], showmedians=True)
+    # a violin needs at least two values; show single points (or nothing) otherwise
+    for i, d in enumerate(data, start=1):
+        d = np.asarray(d, dtype=float)
+        d = d[np.isfinite(d)]
+        if len(d) >= 2 and np.ptp(d) > 0:
+            ax.violinplot([d], positions=[i], showmedians=True)
+        elif len(d):
+            ax.scatter(np.full(len(d), i), d, s=12, color="#3a5a80")
     ax.set_xticks(range(1, len(order) + 1))
     ax.set_xticklabels(order)
     ax.set_ylabel("Trace correlation, matched units")

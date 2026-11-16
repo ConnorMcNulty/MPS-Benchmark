@@ -108,6 +108,7 @@ def load_mps(result_dir, dims, name="MPS"):
         if S is not None:
             S = S.T
     frame_idx = np.asarray(c_meta["coords"]["frame"]).astype(int)
+    frame_idx = _mps_original_frames(result_dir, frame_idx)
     unit_a = a_meta["coords"]["unit_id"]
     unit_c = c_meta["coords"]["unit_id"]
     if list(unit_a) != list(unit_c):
@@ -118,6 +119,37 @@ def load_mps(result_dir, dims, name="MPS"):
             S = S[sel]
     return Result(name, A_sp, (H, W), C.astype(np.float32),
                   None if S is None else S.astype(np.float32), frame_idx)
+
+
+def _mps_original_frames(result_dir, frame_idx):
+    """MPS step 2d renumbers the kept frames 0..n-1 after dropping frames
+    (assign_coords(frame=np.arange(...))), so the exported frame labels are not
+    the original frame numbers. It writes the original indices it removed to
+    all_removed_frames.txt; rebuild the true numbering from that."""
+    import ast
+    hits = glob.glob(os.path.join(result_dir, "**", "all_removed_frames.txt"), recursive=True)
+    if not hits:
+        print("MPS: all_removed_frames.txt not found; using exported frame labels as-is")
+        return frame_idx
+    txt = open(max(hits, key=os.path.getmtime)).read()
+    key = "Original frame indices removed:"
+    removed = ast.literal_eval(txt.split(key, 1)[1].strip()) if key in txt else []
+    removed = sorted(int(r) for r in removed)
+    n_kept = len(frame_idx)
+    contiguous = np.array_equal(frame_idx, np.arange(n_kept))
+    if not removed:
+        return frame_idx
+    if not contiguous:
+        print("MPS: frame labels are not 0..n-1; assuming they are already original indices")
+        return frame_idx
+    total = n_kept + len(removed)
+    orig = np.setdiff1d(np.arange(total), removed)
+    if len(orig) != n_kept:
+        print("MPS: removed-frames list (%d) does not fit %d kept frames; labels left as-is"
+              % (len(removed), n_kept))
+        return frame_idx
+    print("MPS: restored original frame numbers (removed frames: %s)" % removed[:20])
+    return orig
 
 
 # ---------------------------------------------------------------------------

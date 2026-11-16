@@ -1,0 +1,23 @@
+{
+  "pnr_refine": {
+    "noise_freq": 0.18
+  },
+  "seeds_merge": {
+    "noise_freq": 0.18
+  },
+  "initialize": {
+    "noise_freq": 0.18
+  },
+  "get_noise": {
+    "noise_range": [
+      0.18,
+      0.5
+    ]
+  },
+  "first_temporal": {
+    "noise_freq": 0.18
+  },
+  "second_temporal": {
+    "noise_freq": 0.18
+  }
+}

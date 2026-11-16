@@ -67,17 +67,18 @@ def main():
     ap.add_argument("--only", nargs="*", help="pipeline names to run")
     ap.add_argument("--repeats", type=int, help="override repeats")
     ap.add_argument("--dry-run", action="store_true", help="print commands only")
+    ap.add_argument("--work-dir", help="override work_dir, e.g. for a test run that must not touch the main results")
     a = ap.parse_args()
 
     with open(a.config) as f:
         cfg = yaml.safe_load(f)
     mon = cfg.get("monitor", {})
     repeats = a.repeats or cfg.get("repeats", 3)
-    work_dir = os.path.abspath(cfg["work_dir"])
+    work_dir = os.path.abspath(a.work_dir or cfg["work_dir"])
     os.makedirs(work_dir, exist_ok=True)
     pipes = [p for p in cfg["pipelines"] if p.get("enabled", True)]
-    if a.only:
-        pipes = [p for p in pipes if p["name"] in a.only]
+    if a.only:  # --only can also pick entries marked enabled: false
+        pipes = [p for p in cfg["pipelines"] if p["name"] in a.only]
     if not pipes:
         sys.exit("no pipelines selected")
 

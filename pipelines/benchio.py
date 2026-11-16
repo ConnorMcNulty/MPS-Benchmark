@@ -59,7 +59,7 @@ def save_standard(path, A, C, S=None, frame_idx=None, dims=None, meta=None):
         A = np.asarray(A)
         if A.ndim == 3:
             dims = A.shape[1:]
-            A = A.reshape(A.shape[0], -1)
+            A = A.reshape(A.shape[0], int(dims[0]) * int(dims[1]))
         elif dims is None:
             raise ValueError("dims required for 2-D A")
         if A.shape[0] != n and A.shape[1] == n:

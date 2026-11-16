@@ -7,12 +7,10 @@ standard result file. Run inside the minian environment.
   python run_minian.py --video D:\\bench\\data\\synth.avi --out D:\\bench\\runs\\minian\\rep1 ^
                        --fps 10 --workers 8 --memory 8GB --params minian_params.json
 
-Defaults are minian's notebook defaults with two changes for this data:
-  * no spatial crop (the synthetic field is the full frame)
-  * noise_freq scaled for 10 fps. minian's 0.06 default assumes ~30 fps
-    (frequency is in cycles/frame); 0.06 * 30 / 10 = 0.18 keeps the same
-    cutoff in Hz. Override if Ari's MPS settings use something else, and keep
-    MPS and minian on the same value where the parameters correspond.
+Defaults are minian's pipeline.ipynb defaults, unchanged, except that no
+spatial crop is applied (the synthetic field is the full frame). Every stage
+prints how many seeds / units remain ("[bench] units after ..."), so a low unit
+count can be traced to the stage that removed it.
 
 Written against minian 1.2.x.
 """
@@ -33,20 +31,33 @@ DEFAULTS = {
     "estimate_motion": {"dim": "frame"},
     "seeds_init": {"wnd_size": 1000, "method": "rolling", "stp_size": 500,
                    "max_wnd": 15, "diff_thres": 3},
-    "pnr_refine": {"noise_freq": 0.18, "thres": 1.5},
+    "pnr_refine": {"noise_freq": 0.06, "thres": 1},
     "ks_refine": {"sig": 0.05},
-    "seeds_merge": {"thres_dist": 10, "thres_corr": 0.8, "noise_freq": 0.18},
-    "initialize": {"thres_corr": 0.8, "wnd": 10, "noise_freq": 0.18},
+    "seeds_merge": {"thres_dist": 10, "thres_corr": 0.8, "noise_freq": 0.06},
+    "initialize": {"thres_corr": 0.8, "wnd": 10, "noise_freq": 0.06},
     "init_merge": {"thres_corr": 0.8},
-    "get_noise": {"noise_range": [0.18, 0.5]},
+    "get_noise": {"noise_range": [0.06, 0.5]},
     "first_spatial": {"dl_wnd": 10, "sparse_penal": 0.01, "size_thres": [25, None]},
-    "first_temporal": {"noise_freq": 0.18, "sparse_penal": 1, "p": 1,
+    "first_temporal": {"noise_freq": 0.06, "sparse_penal": 1, "p": 1,
                        "add_lag": 20, "jac_thres": 0.2},
     "first_merge": {"thres_corr": 0.8},
     "second_spatial": {"dl_wnd": 10, "sparse_penal": 0.01, "size_thres": [25, None]},
-    "second_temporal": {"noise_freq": 0.18, "sparse_penal": 1, "p": 1,
+    "second_temporal": {"noise_freq": 0.06, "sparse_penal": 1, "p": 1,
                         "add_lag": 20, "jac_thres": 0.4},
 }
+
+
+class AllUnitsDropped(Exception):
+    pass
+
+
+def save_empty(out, H, W, T, reason):
+    import numpy as np
+    print("[bench] ALL UNITS DROPPED (%s): saving an empty result so the run is scored" % reason, flush=True)
+    save_standard(os.path.join(out, "result_standard.npz"), np.zeros((0, H, W), np.float32),
+                  np.zeros((0, T), np.float32), np.zeros((0, T), np.float32),
+                  frame_idx=np.arange(T), dims=(H, W),
+                  meta={"tool": "minian", "all_units_dropped": reason})
 
 
 def main():
@@ -95,6 +106,13 @@ def main():
         cluster.scheduler.add_plugin(TaskAnnotation())
         client = Client(cluster)
 
+    def nunits(tag, obj):
+        try:
+            n = len(obj) if not hasattr(obj, "sizes") else int(obj.sizes["unit_id"])
+        except Exception:
+            n = -1
+        print("[bench] units after %-28s %d" % (tag, n), flush=True)
+
     def sv(arr, name, **kw):
         return save_minian(arr.rename(name), intpath, overwrite=True, **kw)
 
@@ -124,19 +142,26 @@ def main():
         with stage("initialization"):
             max_proj = sv(Y_fm_chk.max("frame"), "max_proj").compute()
             seeds = seeds_init(Y_fm_chk, **P["seeds_init"])
+            nunits("seeds_init", seeds)
             seeds, pnr, gmm = pnr_refine(Y_hw_chk, seeds, **P["pnr_refine"])
+            nunits("pnr_refine (passing)", seeds[seeds["mask_pnr"]])
             seeds = ks_refine(Y_hw_chk, seeds, **P["ks_refine"])
+            nunits("ks_refine (passing)", seeds[seeds["mask_ks"]])
             seeds_final = seeds[seeds["mask_ks"] & seeds["mask_pnr"]].reset_index(drop=True)
+            nunits("pnr & ks", seeds_final)
             seeds_final = seeds_merge(Y_hw_chk, max_proj, seeds_final, **P["seeds_merge"])
+            nunits("seeds_merge", seeds_final[seeds_final["mask_mrg"]])
             A_init = initA(Y_hw_chk, seeds_final[seeds_final["mask_mrg"]], **P["initialize"])
             # One chunk: initC turns A into scipy.sparse blocks and then rechunks
             # them to a single block anyway; with several blocks, some dask
             # versions fail to concatenate them ("setting an array element with
             # a sequence"). Same memory as minian's own rechunk(-1).
             A_init = sv(A_init, "A_init", chunks={"unit_id": -1, "height": -1, "width": -1})
+            nunits("initA", A_init)
             C_init = initC(Y_fm_chk, A_init)
             C_init = sv(C_init, "C_init", chunks={"unit_id": 1, "frame": -1})
             A, C = unit_merge(A_init, C_init, **P["init_merge"])
+            nunits("init unit_merge", A)
             A = sv(A, "A")
             C = sv(C, "C")
             C_chk = sv(C, "C_chk", chunks={"unit_id": -1, "frame": chk["frame"]})
@@ -163,6 +188,8 @@ def main():
             YrA = sv(compute_trace(Y_fm_chk, A, b_, C_chk, f_), "YrA",
                      chunks={"unit_id": 1, "frame": -1})
             C_new, S_new, b0_new, c0_new, g, mask = update_temporal(A, C, YrA=YrA, **params)
+            if int(C_new.sizes["unit_id"]) == 0:
+                raise AllUnitsDropped("update_temporal dropped every unit")
             C = sv(C_new.chunk({"unit_id": 1, "frame": -1}), "C")
             C_chk = sv(C, "C_chk", chunks={"unit_id": -1, "frame": chk["frame"]})
             S = sv(S_new.chunk({"unit_id": 1, "frame": -1}), "S")
@@ -171,35 +198,45 @@ def main():
             A = A.sel(unit_id=C.coords["unit_id"].values)
             return A, C, C_chk, S, b0, c0
 
-        with stage("cnmf_spatial_1"):
-            A, C, C_chk, b, f = spatial(A, C, C_chk, P["first_spatial"], 1)
-        with stage("cnmf_temporal_1"):
-            A, C, C_chk, S, b0, c0 = temporal(A, C, C_chk, b, f, P["first_temporal"])
-        with stage("merge"):
-            A_mrg, C_mrg, [sig_mrg] = unit_merge(A, C, [C + b0 + c0], **P["first_merge"])
-            A = sv(A_mrg, "A_mrg")
-            C = sv(sig_mrg, "C_mrg")
-            C_chk = sv(C, "C_mrg_chk", chunks={"unit_id": -1, "frame": chk["frame"]})
-        with stage("cnmf_spatial_2"):
-            A, C, C_chk, b, f = spatial(A, C, C_chk, P["second_spatial"], 2)
-        with stage("cnmf_temporal_2"):
-            A, C, C_chk, S, b0, c0 = temporal(A, C, C_chk, b, f, P["second_temporal"])
+        H0, W0, T0 = int(varr.sizes["height"]), int(varr.sizes["width"]), int(varr.sizes["frame"])
+        try:
+            with stage("cnmf_spatial_1"):
+                A, C, C_chk, b, f = spatial(A, C, C_chk, P["first_spatial"], 1)
+                nunits("first spatial update", A)
+            with stage("cnmf_temporal_1"):
+                A, C, C_chk, S, b0, c0 = temporal(A, C, C_chk, b, f, P["first_temporal"])
+                nunits("first temporal update", C)
+            with stage("merge"):
+                A_mrg, C_mrg, [sig_mrg] = unit_merge(A, C, [C + b0 + c0], **P["first_merge"])
+                A = sv(A_mrg, "A_mrg")
+                C = sv(sig_mrg, "C_mrg")
+                C_chk = sv(C, "C_mrg_chk", chunks={"unit_id": -1, "frame": chk["frame"]})
+                nunits("merge", A)
+            with stage("cnmf_spatial_2"):
+                A, C, C_chk, b, f = spatial(A, C, C_chk, P["second_spatial"], 2)
+                nunits("second spatial update", A)
+            with stage("cnmf_temporal_2"):
+                A, C, C_chk, S, b0, c0 = temporal(A, C, C_chk, b, f, P["second_temporal"])
+                nunits("second temporal update", C)
 
-        with stage("export"):
-            A_np = A.transpose("unit_id", "height", "width").compute().values
-            C_np = C.transpose("unit_id", "frame").compute().values
-            S_np = S.sel(unit_id=C.coords["unit_id"].values).transpose("unit_id", "frame").compute().values
-            H, W = int(varr.sizes["height"]), int(varr.sizes["width"])
-            full = np.zeros((A_np.shape[0], H, W), dtype=np.float32)
-            ys = A.coords["height"].values.astype(int)
-            xs = A.coords["width"].values.astype(int)
-            full[:, ys[:, None], xs[None, :]] = A_np
-            save_standard(os.path.join(a.out, "result_standard.npz"), full, C_np, S_np,
-                          frame_idx=C.coords["frame"].values.astype(int),
-                          meta={"tool": "minian", "params": P, "workers": a.workers,
-                                "memory_limit": a.memory})
-            with open(os.path.join(a.out, "params_used.json"), "w") as fh:
-                json.dump(P, fh, indent=2, default=list)
+            with stage("export"):
+                A_np = A.transpose("unit_id", "height", "width").compute().values
+                C_np = C.transpose("unit_id", "frame").compute().values
+                S_np = S.sel(unit_id=C.coords["unit_id"].values).transpose("unit_id", "frame").compute().values
+                H, W = int(varr.sizes["height"]), int(varr.sizes["width"])
+                full = np.zeros((A_np.shape[0], H, W), dtype=np.float32)
+                ys = A.coords["height"].values.astype(int)
+                xs = A.coords["width"].values.astype(int)
+                full[:, ys[:, None], xs[None, :]] = A_np
+                save_standard(os.path.join(a.out, "result_standard.npz"), full, C_np, S_np,
+                              frame_idx=C.coords["frame"].values.astype(int),
+                              meta={"tool": "minian", "params": P, "workers": a.workers,
+                                    "memory_limit": a.memory})
+                with open(os.path.join(a.out, "params_used.json"), "w") as fh:
+                    json.dump(P, fh, indent=2, default=list)
+        except AllUnitsDropped as exc:
+            with stage("export"):
+                save_empty(a.out, H0, W0, T0, str(exc))
     finally:
         client.close()
         cluster.close()

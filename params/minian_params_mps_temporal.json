@@ -1,0 +1,10 @@
+{
+  "first_temporal": {
+    "p": 2,
+    "sparse_penal": 0.0229
+  },
+  "second_temporal": {
+    "p": 2,
+    "sparse_penal": 0.01
+  }
+}

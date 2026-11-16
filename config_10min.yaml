@@ -1,0 +1,175 @@
+# 10-minute scaling run. Same tools and settings as config.yaml; only the video,
+# frame count, output folder and MIN1PIPE input change.
+# Benchmark configuration for the Windows PC.
+# Everything lives under C:/Users/ariAccount/Desktop/CM_benchmark
+#
+# Expected folder layout:
+#   CM_benchmark/
+#     mps_bench/            <- this kit (unzipped); this file sits here as config.yaml
+#     data/                 <- the synthetic AVI (the only .avi here) + ground-truth file
+#     runs/                 <- created automatically; every run's output, runs.csv, evaluation/
+#
+# Forward slashes are used on purpose: they work on Windows and avoid YAML
+# treating backslashes as escape characters.
+#
+# Lines marked TODO need checking on the PC before the first run.
+
+video: C:/Users/ariAccount/Desktop/CM_benchmark/data_10min/synthetic_10min.avi
+dims: [600, 600]                                                          # height, width
+fps: 10
+work_dir: C:/Users/ariAccount/Desktop/CM_benchmark/runs_10min
+repeats: 3
+
+monitor:
+  interval_s: 0.2
+  uss: true
+  timeout_min: 480
+  cooldown_s: 60
+
+ground_truth:
+  # From Ari's 10_min_compare folder (MPS Sample Data\10_min_compare). Copy these
+  # two files into CM_benchmark/data next to the video:
+  #   ground_truth_footprints.npy    (100, 600, 600)
+  #   ground_truth_fluorescence.npy  (100, 6000)  -- 10 min at 10 fps
+  # There is no spike file, so spike metrics are skipped.
+  footprints: C:/Users/ariAccount/Desktop/CM_benchmark/data/ground_truth_footprints.npy
+  traces: C:/Users/ariAccount/Desktop/CM_benchmark/data/ground_truth_fluorescence.npy
+  footprint_layout: n,h,w
+  # The 10-min video covers the whole simulation.
+  frame_offset: 0
+  n_frames: 6000
+  drop_inactive: true    # drop neurons whose trace is flat within those 3000 frames
+
+matching:
+  bin_thresh: 0.2
+  min_iou: 0.3
+  max_centroid_dist: 10
+  global_align: true
+
+# Second score, computed alongside the IoU-based one: the method in Ari's
+# MPS_Ground_Truth_Comparison notebook (Hungarian on centroid distance <= 15 px,
+# median offset removed, near-duplicate components excluded from precision).
+# Reporting both shows MPS's earlier numbers are reproduced and how each tool
+# fares under a stricter footprint-overlap criterion.
+centroid_matching:
+  thresh_px: 15.0
+  offset_correct: true
+  dup_spat: 0.95
+  dup_centroid: 5.0
+
+# {config_dir} = the folder this file is in (CM_benchmark/mps_bench), so the
+# params/ folder of the kit is used. {repo} = the kit folder.
+pipelines:
+
+  - name: MPS
+    format: mps
+    mkdirs: ["{run_dir}/1_1_Processed/cache_data"]
+    # MPS's launcher.cmd builds its environment in the repo's own env folder.
+    # Confirmed present on the benchmark PC (Desktop/MPS_1.0.0/env/python.exe).
+    # Calling env/python.exe directly skips conda activation, so the env's DLL
+    # folders (ffmpeg, MKL) are put on PATH here instead.
+    env:
+      PATH: "C:/Users/ariAccount/Desktop/MPS_1.0.0/env;C:/Users/ariAccount/Desktop/MPS_1.0.0/env/Library/mingw-w64/bin;C:/Users/ariAccount/Desktop/MPS_1.0.0/env/Library/usr/bin;C:/Users/ariAccount/Desktop/MPS_1.0.0/env/Library/bin;C:/Users/ariAccount/Desktop/MPS_1.0.0/env/Scripts;${PATH}"
+    cmd: [C:/Users/ariAccount/Desktop/MPS_1.0.0/env/python.exe,
+          C:/Users/ariAccount/Desktop/MPS_1.0.0/run_step.py,
+          --all, --keep-going,
+          --cache-path, "{run_dir}/1_1_Processed/cache_data",
+          --params, "{config_dir}/params/mps_params.json",
+          --input-dir, "{video_dir}", --output-dir, "{run_dir}",
+          --animal, "1", --session, "1",
+          --workers, "8", --memory, "200GB",
+          --log-file, "{run_dir}/mps_transcript.log"]
+    output: "{run_dir}"
+
+  - name: minian
+    format: standard
+    # Same PATH setup as conda activate would do.
+    env:
+      PATH: "C:/Users/ariAccount/anaconda3/envs/minian;C:/Users/ariAccount/anaconda3/envs/minian/Library/mingw-w64/bin;C:/Users/ariAccount/anaconda3/envs/minian/Library/usr/bin;C:/Users/ariAccount/anaconda3/envs/minian/Library/bin;C:/Users/ariAccount/anaconda3/envs/minian/Scripts;${PATH}"
+      # minian is not pip-installed in this env; it runs from the cloned repo folder.
+      PYTHONPATH: "C:/Users/ariAccount/Desktop/minian"
+    cmd: [C:/Users/ariAccount/anaconda3/envs/minian/python.exe, "{repo}/pipelines/run_minian.py",
+          --video, "{video}", --out, "{run_dir}", --fps, "{fps}",
+          --workers, "8", --memory, "200GB",
+          --params, "{config_dir}/params/minian_params.json"]
+    output: "{run_dir}/result_standard.npz"
+
+  - name: minian_10fps
+    enabled: false   # run with --only minian_10fps; see params/minian_params_10fps.json
+    # Same as minian, but noise_freq scaled to 10 fps (0.06 assumes ~30 fps:
+    # it is a fraction of the frame rate, so 0.06 x 30 / 10 = 0.18).
+    format: standard
+    # Same PATH setup as conda activate would do.
+    env:
+      PATH: "C:/Users/ariAccount/anaconda3/envs/minian;C:/Users/ariAccount/anaconda3/envs/minian/Library/mingw-w64/bin;C:/Users/ariAccount/anaconda3/envs/minian/Library/usr/bin;C:/Users/ariAccount/anaconda3/envs/minian/Library/bin;C:/Users/ariAccount/anaconda3/envs/minian/Scripts;${PATH}"
+      # minian is not pip-installed in this env; it runs from the cloned repo folder.
+      PYTHONPATH: "C:/Users/ariAccount/Desktop/minian"
+    cmd: [C:/Users/ariAccount/anaconda3/envs/minian/python.exe, "{repo}/pipelines/run_minian.py",
+          --video, "{video}", --out, "{run_dir}", --fps, "{fps}",
+          --workers, "8", --memory, "200GB",
+          --params, "{config_dir}/params/minian_params_10fps.json"]
+    output: "{run_dir}/result_standard.npz"
+
+  - name: minian_mps_temporal
+    enabled: true    # minian defaults except the temporal update uses
+    # MPS's defaults for the same step (p=2, sparse_penal 0.0229 then 0.01, from
+    # MPS steps 6d / 8b), to isolate how much of the MPS-minian gap comes from it.
+    format: standard
+    # Same PATH setup as conda activate would do.
+    env:
+      PATH: "C:/Users/ariAccount/anaconda3/envs/minian;C:/Users/ariAccount/anaconda3/envs/minian/Library/mingw-w64/bin;C:/Users/ariAccount/anaconda3/envs/minian/Library/usr/bin;C:/Users/ariAccount/anaconda3/envs/minian/Library/bin;C:/Users/ariAccount/anaconda3/envs/minian/Scripts;${PATH}"
+      # minian is not pip-installed in this env; it runs from the cloned repo folder.
+      PYTHONPATH: "C:/Users/ariAccount/Desktop/minian"
+    cmd: [C:/Users/ariAccount/anaconda3/envs/minian/python.exe, "{repo}/pipelines/run_minian.py",
+          --video, "{video}", --out, "{run_dir}", --fps, "{fps}",
+          --workers, "8", --memory, "200GB",
+          --params, "{config_dir}/params/minian_params_mps_temporal.json"]
+    output: "{run_dir}/result_standard.npz"
+
+  - name: CaImAn
+    format: standard
+    # Same PATH setup as conda activate would do.
+    env:
+      PATH: "C:/Users/ariAccount/anaconda3/envs/caiman;C:/Users/ariAccount/anaconda3/envs/caiman/Library/mingw-w64/bin;C:/Users/ariAccount/anaconda3/envs/caiman/Library/usr/bin;C:/Users/ariAccount/anaconda3/envs/caiman/Library/bin;C:/Users/ariAccount/anaconda3/envs/caiman/Scripts;${PATH}"
+    cmd: [C:/Users/ariAccount/anaconda3/envs/caiman/python.exe, "{repo}/pipelines/run_caiman.py",
+          --video, "{video}", --out, "{run_dir}", --fps, "{fps}", --workers, "8",
+          --params, "{config_dir}/params/caiman_params.json"]
+    output: "{run_dir}/result_standard.npz"
+
+  - name: MIN1PIPE
+    format: min1pipe
+    # MIN1PIPE cannot read compressed AVIs (its reader pulls raw bytes from
+    # uncompressed UCLA Miniscope files, and calls aviinfo, which current MATLAB
+    # lacks). Convert once, before benchmarking, with a pixel-for-pixel check:
+    #   python -m bench.make_tiff C:/Users/ariAccount/Desktop/CM_benchmark/data_10min/synthetic_10min.avi C:/Users/ariAccount/Desktop/CM_benchmark/min1pipe_input_10min/synthetic_10min.tif
+    # Each run gets its own copy (MIN1PIPE writes next to its input); the copy is
+    # made before the timer starts.
+    copy: [["C:/Users/ariAccount/Desktop/CM_benchmark/min1pipe_input_10min/synthetic_10min.tif", "{run_dir}/synthetic_10min.tif"]]
+    # matlab -batch confirmed working on this PC.
+    # Arguments: tif, run folder, fps, spatialr, se, motion correction, MIN1PIPE folder, workers.
+    # spatialr and se are [] so MIN1PIPE picks them itself, as its own demo does
+    # (defaults-only, like the other tools).
+    cmd: [matlab, -batch,
+          "addpath('{repo}/pipelines'); run_min1pipe('{run_dir}/synthetic_10min.tif', '{run_dir}', {fps}, [], [], 1, 'C:/Users/ariAccount/Desktop/MIN1PIPE', 8)"]
+    output: "{run_dir}/min1pipe_standard.mat"
+
+  - name: MIN1PIPE_fixed
+    enabled: false   # run with --only MIN1PIPE_fixed
+    # Same as MIN1PIPE, but spatialr and neuron size fixed to the values MIN1PIPE's
+    # own auto-detection chose on the 5-min video (0.5 and 5). On the 10-min video
+    # auto-detection chose spatialr 0.4545 and kept 15 ROIs instead of 112.
+    format: min1pipe
+    # MIN1PIPE cannot read compressed AVIs (its reader pulls raw bytes from
+    # uncompressed UCLA Miniscope files, and calls aviinfo, which current MATLAB
+    # lacks). Convert once, before benchmarking, with a pixel-for-pixel check:
+    #   python -m bench.make_tiff C:/Users/ariAccount/Desktop/CM_benchmark/data_10min/synthetic_10min.avi C:/Users/ariAccount/Desktop/CM_benchmark/min1pipe_input_10min/synthetic_10min.tif
+    # Each run gets its own copy (MIN1PIPE writes next to its input); the copy is
+    # made before the timer starts.
+    copy: [["C:/Users/ariAccount/Desktop/CM_benchmark/min1pipe_input_10min/synthetic_10min.tif", "{run_dir}/synthetic_10min.tif"]]
+    # matlab -batch confirmed working on this PC.
+    # Arguments: tif, run folder, fps, spatialr, se, motion correction, MIN1PIPE folder, workers.
+    # spatialr and se are [] so MIN1PIPE picks them itself, as its own demo does
+    # (defaults-only, like the other tools).
+    cmd: [matlab, -batch,
+          "addpath('{repo}/pipelines'); run_min1pipe('{run_dir}/synthetic_10min.tif', '{run_dir}', {fps}, 0.5, 5, 1, 'C:/Users/ariAccount/Desktop/MIN1PIPE', 8)"]
+    output: "{run_dir}/min1pipe_standard.mat"

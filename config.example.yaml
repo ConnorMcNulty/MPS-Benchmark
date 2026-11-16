@@ -1,0 +1,68 @@
+# Benchmark configuration. Copy to config.yaml and edit paths for the Windows PC.
+# Forward slashes work fine in Windows paths here.
+
+video: D:/bench/data/synthetic_5min.avi     # 600 x 600, 10 fps, 3000 frames
+dims: [600, 600]                            # height, width
+fps: 10
+work_dir: D:/bench/runs                     # every run's output + runs.csv go here
+repeats: 3
+
+monitor:
+  interval_s: 0.2        # memory sampling period
+  uss: true              # also record private (unique) memory; report this one in the paper
+  timeout_min: 240       # kill a run that takes longer than this (counts as a failure)
+  cooldown_s: 60         # idle time between runs
+
+ground_truth:
+  # path or path:key. Supported: .npy .npz .mat (v7 and v7.3) .h5 .tif .csv
+  footprints: D:/bench/data/ground_truth.npz:A
+  traces: D:/bench/data/ground_truth.npz:C
+  spikes: D:/bench/data/ground_truth.npz:S          # delete this line if not available
+  footprint_layout: auto   # or n,h,w | h,w,n | pixels,n | pixels,n,F (MATLAB order) | n,pixels
+
+matching:
+  bin_thresh: 0.2          # binarize each footprint at 20% of its max
+  min_iou: 0.3             # a matched pair needs at least this IoU
+  max_centroid_dist: 10    # pixels
+  global_align: true       # correct a constant offset from motion-correction templates
+
+# Resource settings should be matched across tools: same worker count, and
+# comparable per-worker memory limits for the two Dask-based tools.
+pipelines:
+
+  - name: MPS
+    format: mps
+    # MPS needs an existing cache_data folder to start from step 1.
+    mkdirs: ["{run_dir}/1_1_Processed/cache_data"]
+    cmd: [C:/MPS/env/python.exe, C:/MPS/run_step.py, --all, --keep-going,
+          --cache-path, "{run_dir}/1_1_Processed/cache_data",
+          --params, "{config_dir}/params/mps_params.json",
+          --input-dir, "{video_dir}", --output-dir, "{run_dir}",
+          --animal, "1", --session, "1",
+          --workers, "8", --memory, "8GB",
+          --log-file, "{run_dir}/mps_transcript.log"]
+    output: "{run_dir}"
+
+  - name: minian
+    format: standard
+    cmd: [C:/Users/you/miniconda3/envs/minian/python.exe, "{repo}/pipelines/run_minian.py",
+          --video, "{video}", --out, "{run_dir}", --fps, "{fps}",
+          --workers, "8", --memory, "8GB",
+          --params, "{config_dir}/params/minian_params.json"]
+    output: "{run_dir}/result_standard.npz"
+
+  - name: CaImAn
+    format: standard
+    cmd: [C:/Users/you/miniconda3/envs/caiman/python.exe, "{repo}/pipelines/run_caiman.py",
+          --video, "{video}", --out, "{run_dir}", --fps, "{fps}", --workers, "8",
+          --params, "{config_dir}/params/caiman_params.json"]
+    output: "{run_dir}/result_standard.npz"
+
+  - name: MIN1PIPE
+    format: min1pipe
+    # MATLAB has no worker setting here; it uses multithreading (and parfor if a
+    # pool is open). Note in the paper that MATLAB thread use is not capped to 8
+    # unless you add maxNumCompThreads(8) to run_min1pipe.m.
+    cmd: [matlab, -batch,
+          "addpath('{repo}/pipelines'); run_min1pipe('{video}', '{run_dir}', {fps}, 1, 5, 1, 'C:/tools/MIN1PIPE')"]
+    output: "{run_dir}/min1pipe_standard.mat"
